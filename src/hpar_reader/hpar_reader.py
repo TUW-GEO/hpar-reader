@@ -1,6 +1,7 @@
 import argparse
 import gc
 import os
+import zipfile
 from datetime import datetime
 
 import numpy as np
@@ -23,39 +24,21 @@ HM_NOBS_NAME = 'SIG0-HPAR-NOBS'
 HM_SINE_NAME = 'SIG0-HPAR-S{}'
 HM_COSINE_NAME = 'SIG0-HPAR-C{}'
 
-folder_hierarchy = ["sensor", "parameter", "data_version", "subgrid_name", "tile_name"]
 
+def load_hpar_dc(path, tiles=None, folder_hierarchy = ['tile']):
+    """helper function to instantiate a HPAR datacube, \
+    assumes path is a zip folder or folder containing tiles"""
 
-def loadDC(base_path, sensor='S1_CSAR_IWGRDH', parameter='SIG0-HPAR', data_version='V0M2R1', res=20, continent=None,
-        tiles=None, folder_hierarchy=folder_hierarchy):
+    if os.path.isdir(path):
+        dir_tree = build_smarttree(path + '/', folder_hierarchy, register_file_pattern="^[^Q].*.tif")
+        filepaths = dir_tree.file_register
+    elif os.path.splitext(path)[1] == '.zip':
+        zip = zipfile.ZipFile(path)
+        filelist_in_zip = [name for name in zip.namelist() if name.endswith('.tif')]
+        filepaths = [r'{}{}/{}'.format('/vsizip/', path, file) for file in filelist_in_zip]
+        print('Needs updated veranda...')
+        raise NotImplementedError
 
-    if continent:
-        subgrid = 'EQUI7_' + '{}{:03d}M'.format(continent, res)
-    else:
-        subgrid = None
-
-    if sensor is not None:
-        base_path = os.path.join(base_path, sensor)
-        folder_hierarchy.remove("sensor")
-
-        if parameter is not None:
-            base_path = os.path.join(base_path, parameter)
-            folder_hierarchy.remove("parameter")
-
-            if data_version is not None:
-                base_path = os.path.join(base_path, data_version)
-                folder_hierarchy.remove("data_version")
-
-                if subgrid is not None:
-                    base_path = os.path.join(base_path, subgrid)
-                    folder_hierarchy.remove("subgrid_name")
-
-                    if tiles is not None and len(tiles) == 1:
-                        base_path = os.path.join(base_path, tiles[0])
-                        folder_hierarchy.remove("tile_name")
-
-    dir_tree = build_smarttree(base_path + '/', folder_hierarchy, register_file_pattern="^[^Q].*.tif")
-    filepaths = dir_tree.file_register
 
     dimensions = ["datetime_1", "datetime_2", "tile_name", "grid_name", "extra_field", "var_name", "sensor_field",
                   "data_version", "band", "creator"]
@@ -73,26 +56,6 @@ def loadDC(base_path, sensor='S1_CSAR_IWGRDH', parameter='SIG0-HPAR', data_versi
 
     if tiles is not None and len(tiles) > 1:
         dc_reader.select_by_dimension(lambda t: t.isin(tiles), name="tile_name", inplace=True)
-
-    '''
-    # rename dimensions to filenaming independent names
-    if 'datetime_1' in dimensions:
-        dc_reader.rename_dimensions({'datetime_1': 'time'}, inplace=True)
-    if 'datetime_2' in dimensions:
-        dc_reader.rename_dimensions({'datetime_2': 'time2'}, inplace=True)
-    if 'var_name' in dimensions:
-        dc_reader.rename_dimensions({'var_name': 'variable'}, inplace=True)
-    if 'tile_name' in dimensions:
-        dc_reader.rename_dimensions({'tile_name': 'tile'}, inplace=True)
-    if 'grid_name' in dimensions:
-        dc_reader.rename_dimensions({'grid_name': 'grid'}, inplace=True)
-    if 'band' in dimensions:
-        dc_reader.rename_dimensions({'band': 'pol'}, inplace=True)
-    if 'data_version' in dimensions:
-        dc_reader.rename_dimensions({'data_version': 'version'}, inplace=True)
-    if 'extra_field' in dimensions:
-        dc_reader.rename_dimensions({'extra_field': 'orbit'}, inplace=True)
-    '''
 
     return dc_reader
 
@@ -170,7 +133,7 @@ def computeDoY(dc, dtime, decoder, chunkSize=2500):
                 del sin_coeff, cos_coeff
                 gc.collect()
 
-                # replace probematic pixels
+                # replace problematic pixels
                 idx = np.isfinite(mean_arr)
                 mean_arr[~idx] = np.nan
 
@@ -193,12 +156,13 @@ def encoder(data, nodataval=-9999, scale_factor=0.10, dtype='int16', **kwargs):
 class HPAR_DC_Reader:
     """convenience class to wrap a datacube for harmonic parameter datacube reading and manipulation"""
 
-    def __init__(self, base_path, sensor='S1_CSAR_IWGRDH', parameter='SIG0-HPAR', data_version='V0M2R1', res=20,
-                continent=None, tiles=None, folder_hierarchy=folder_hierarchy):
+    def __init__(self, path, sensor='S1_CSAR_IWGRDH', parameter='SIG0-HPAR', data_version='V0M2R1', res=20,
+                continent=None, tiles=None, folder_hierarchy=['tile']):
         """HPARReader constructor"""
 
-        self.dc = loadDC(base_path, sensor=sensor, parameter=parameter, data_version=data_version, res=res,
-                        continent=continent, tiles=tiles, folder_hierarchy=folder_hierarchy)
+        self.dc = load_hpar_dc(path, tiles=None, folder_hierarchy=folder_hierarchy)
+        #self.dc = loadDC(base_path, sensor=sensor, parameter=parameter, data_version=data_version, res=res,
+        #                continent=continent, tiles=tiles, folder_hierarchy=folder_hierarchy)
 
         #if len(tiles) == 1: change as pandas check, make a function
         #    self.isSingleTile = True
@@ -228,6 +192,7 @@ class HPAR_DC_Reader:
         return filt_dc
 
     def convert_amp_ph(self, orbit, tile, out_filepath=''):
+        raise NotImplementedError
 
         filt_dc = self.dc.select_by_dimension(lambda o: o == orbit, name="extra_field", inplace=False)
         filt_dc = filt_dc.select_by_dimension(lambda t: t.isin([tile]), name="tile_name", inplace=False)
@@ -245,6 +210,7 @@ class HPAR_DC_Reader:
             dt = src.dtypes[0]
             nd = src.nodatavals[0]
             sf = src.scale_factors[0]
+
 
         sample_tile = sample_row['tile_name']
         sample_grid = sample_row['grid_name']
@@ -321,7 +287,7 @@ class HPAR_DC_Reader:
             AcGt.close()
             PcGt.close()
 
-    def compute_DoYE(self, orbit, tile, dtime=datetime.now(), out_filepath=None, chunkSize=5000):
+    def compute_DoYE(self, orbit, tile, dtime=datetime.now(), out_filepath=None, chunkSize=2500):
 
         filt_dc = self.dc.select_by_dimension(lambda o: o == orbit, name="extra_field", inplace=False)
         filt_dc = filt_dc.select_by_dimension(lambda t: t.isin([tile]), name="tile_name", inplace=False)
@@ -434,27 +400,29 @@ def run():
     parser.add_argument("-t", "--tiles",
                         help="tile names. Equi7grid tile names",
                         required=True, nargs="+", type=str)
-    parser.add_argument("-o", "--orbit", help="Sentinel-1 Relative Orbit. ",
-                        required=True, default=None, type=str)
-    parser.add_argument("-d", "--date", help="Date to be estimated. ",
+    parser.add_argument("-o", "--orbits", help="Sentinel-1 Relative Orbit. ",
+                        required=True, nargs="+", type=str)
+    parser.add_argument("-d", "--date", help="Date to be estimated. In 'YYYYMMDD' format.",
                         required=True, default=None, type=str)
 
     args = parser.parse_args()
     base_path = args.hpar_path
     subgrid = args.subgrid
     tiles = args.tiles
-    orbit = args.orbit
+    orbits = args.orbits
     date = args.date
 
     if date is not None:
         date = datetime.strptime(date, '%Y%m%d')
 
     hm_dc_reader = HPAR_DC_Reader(base_path, continent=subgrid, tiles=tiles)
-    hm_dc_reader.filter_orbit(orbit)
-    hm_dc_reader.filter_tiles(tiles)
 
-    hm_dc_reader.compute_DoYE(orbit, tiles[0], date)
-    #hm_dc_reader.convert_amp_ph(orbit, tiles[0])
+    for tile in tiles:
+        for orbit in orbits:
+            hm_dc_reader.filter_orbit(orbit)
+            hm_dc_reader.filter_tiles([tile])
+            hm_dc_reader.compute_DoYE(orbit, tile, date)
+
 
 
 if __name__ == "__main__":
