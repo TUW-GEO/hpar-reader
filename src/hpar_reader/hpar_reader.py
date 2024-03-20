@@ -66,7 +66,7 @@ def isValidOrbit(orbit):
 
     if orbit[0] == 'A' or orbit[0] == 'D':
         num = int(orbit[1:4])
-        if num > 1 and num <= 175:
+        if num > 0 and num <= 175:
             valid = True
 
     return valid
@@ -156,20 +156,19 @@ def encoder(data, nodataval=-9999, scale_factor=0.10, dtype='int16', **kwargs):
 class HPAR_DC_Reader:
     """convenience class to wrap a datacube for harmonic parameter datacube reading and manipulation"""
 
-    def __init__(self, path, sensor='S1_CSAR_IWGRDH', parameter='SIG0-HPAR', data_version='V0M2R1', res=20,
-                continent=None, tiles=None, folder_hierarchy=['tile']):
+    def __init__(self, path, out_path=None):
         """HPARReader constructor"""
 
-        self.dc = load_hpar_dc(path, tiles=None, folder_hierarchy=folder_hierarchy)
-        #self.dc = loadDC(base_path, sensor=sensor, parameter=parameter, data_version=data_version, res=res,
-        #                continent=continent, tiles=tiles, folder_hierarchy=folder_hierarchy)
+        self.dc = load_hpar_dc(path, tiles=None, folder_hierarchy=['tile'])  # simplified to point to tile folder
 
-        #if len(tiles) == 1: change as pandas check, make a function
-        #    self.isSingleTile = True
+        if os.path.isdir(out_path):
+            self.out_path = out_path
+        else:
+            raise NotADirectoryError
 
     def filter_orbit(self, orbit):
         """Filters HM datacube to a given orbit"""
-
+        print(orbit)
         if isValidOrbit(orbit):
             filt_dc = self.dc.select_by_dimension(lambda o: o == orbit, name="extra_field", inplace=False)
             if filt_dc.is_empty:
@@ -287,7 +286,7 @@ class HPAR_DC_Reader:
             AcGt.close()
             PcGt.close()
 
-    def compute_DoYE(self, orbit, tile, dtime=datetime.now(), out_filepath=None, chunkSize=2500):
+    def compute_DoYE(self, orbit, tile, dtime=datetime.now(), out_filename=None, chunkSize=2500):
 
         filt_dc = self.dc.select_by_dimension(lambda o: o == orbit, name="extra_field", inplace=False)
         filt_dc = filt_dc.select_by_dimension(lambda t: t.isin([tile]), name="tile_name", inplace=False)
@@ -305,16 +304,21 @@ class HPAR_DC_Reader:
             sf = src.scale_factors[0]
 
         dc_decoder = lambda x: decoder(x, nodataval=nd, scale_factor=sf)
-        # print(dc_decoder(np.array([1000, -9999, 10])))
+
         # setup chunked output
-        if out_filepath is None:
+        if out_filename is None:
 
             del sample_row['filepath']
             sample_row['var_name'] = 'SIG0-HPAR-DoYE'
             sample_row['datetime_1'] = dtime.date()
             del sample_row['datetime_2']
 
-            out_filepath = str(YeodaFilename(sample_row))
+            out_filename = str(YeodaFilename(sample_row))
+
+        if self.out_path is not None:
+            out_filename = os.path.join(self.out_path, out_filename)
+
+        print(out_filename)
 
         meta['creator'] = 'hpar_user'
         meta['harmonic_parameter'] = 'DoYE'
@@ -327,7 +331,7 @@ class HPAR_DC_Reader:
         sample_grid = sample_row['grid_name']
         tileSize = int((int(tile[-1]) * 100000) / int(sample_grid[2:5]))
 
-        DcGt = ChunkedGeoTiff(dst_file=out_filepath, sref=sref, gt=gt, n_cols=tileSize, n_rows=tileSize,
+        DcGt = ChunkedGeoTiff(dst_file=out_filename, sref=sref, gt=gt, n_cols=tileSize, n_rows=tileSize,
                                   nodata=nd, scale=sf, data_type='int16', metadata=meta, overwrite=True)
 
         # start calculations
@@ -393,8 +397,10 @@ def run():
     """Entry point for console_scripts"""
 
     parser = argparse.ArgumentParser(description="TUWien HPAR Reader. Computes DoY estiamte from TU HPARS")
-    parser.add_argument("-path", "--hpar_path", help="Base directory of the TU Wien HPAR files.",
-                        required=True, default='/home/marxt/tuw_s1_hpar', type=str)
+    parser.add_argument("-path", "--hpar_path", help="Directory containing HPAR parameters.",
+                        required=True, default='', type=str)
+    parser.add_argument("-opath", "--out_path", help="Directory where outputs are written.",
+                        required=True, default='', type=str)
     parser.add_argument("-sg", "--subgrid", help="Subgrid. Indentified using 2 character continent code e.g. EU",
                         required=True, type=str)
     parser.add_argument("-t", "--tiles",
@@ -407,6 +413,7 @@ def run():
 
     args = parser.parse_args()
     base_path = args.hpar_path
+    out_path = args.out_path
     subgrid = args.subgrid
     tiles = args.tiles
     orbits = args.orbits
@@ -415,7 +422,7 @@ def run():
     if date is not None:
         date = datetime.strptime(date, '%Y%m%d')
 
-    hm_dc_reader = HPAR_DC_Reader(base_path, continent=subgrid, tiles=tiles)
+    hm_dc_reader = HPAR_DC_Reader(base_path, out_path=out_path)
 
     for tile in tiles:
         for orbit in orbits:
